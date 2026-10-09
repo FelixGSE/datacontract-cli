@@ -10,7 +10,7 @@ Creates a data contract from files in Azure Blob Storage, in CSV, JSON, Parquet,
 
 ```bash
 datacontract import adls \
-  --source abfss://my-container/orders/*.json \
+  --source abfss://my-container@myaccount.dfs.core.windows.net/orders/*.json \
   --output datacontract.yaml
 ```
 

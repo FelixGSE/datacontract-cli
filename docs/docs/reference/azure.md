@@ -21,22 +21,28 @@ servers:
 
 ## Authentication
 
-Authentication uses an Azure Service Principal (App Registration) with a secret:
+An existing Azure identity is used when no variable is set: `az login`, a managed identity on an Azure VM or container, workload identity federation on a Kubernetes pod or in CI, or the standard `AZURE_*` variables (the [DefaultAzureCredential](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.defaultazurecredential) chain; with azure-identity 1.24 or newer, set `AZURE_TOKEN_CREDENTIALS` to pin one of its credentials).
+
+The variables below override that, in this order of precedence:
 
 | Variable | Example | Description |
 |---|---|---|
-| `DATACONTRACT_AZURE_TENANT_ID` | `79f5b80f-...` | The Azure Tenant ID |
+| `DATACONTRACT_AZURE_CONNECTION_STRING` | `DefaultEndpointsProtocol=https;AccountName=...` | A storage account connection string |
+| `DATACONTRACT_AZURE_STORAGE_ACCOUNT_KEY` | `Eby8vdM02x...` | A storage account key; the account name comes from the `location` |
+| `DATACONTRACT_AZURE_TENANT_ID` | `79f5b80f-...` | The Azure Tenant ID of a service principal |
 | `DATACONTRACT_AZURE_CLIENT_ID` | `3cf7ce49-...` | The Application/Client ID of the app registration |
 | `DATACONTRACT_AZURE_CLIENT_SECRET` | `yZK8Q~GWO1M...` | The client secret value |
 
-The service principal needs the **Storage Blob Data Reader** role. The [metadata-check path](../testing/azure.md#metadata-checks) alternatively accepts `DATACONTRACT_AZURE_CONNECTION_STRING` or `DATACONTRACT_AZURE_STORAGE_ACCOUNT_KEY`.
+The identity needs the **Storage Blob Data Reader** role on the container or storage account. File contents are read with DuckDB: a service principal, connection string or account key is handed to it directly, while the credential chain gives it one access token per run (valid for about an hour). [Metadata checks](../testing/azure.md#metadata-checks) use the Azure SDK with the same credentials.
 
 Supported `location` URL formats (in the `servers` block):
 
-- `https://<account>.blob.core.windows.net/<container>/<prefix>`
 - `abfss://<container>@<account>.dfs.core.windows.net/<prefix>`
-- `azure://<container>@<account>.blob.core.windows.net/<prefix>`
-- `wasbs://<container>@<account>.blob.core.windows.net/<prefix>`
+- `abfss://<account>.dfs.core.windows.net/<container>/<prefix>`
+- `az://<account>.blob.core.windows.net/<container>/<prefix>` (or `azure://`)
+- `az://<container>/<prefix>` — only with a connection string, which names the account itself
+
+The [metadata checks](../testing/azure.md#metadata-checks) also accept `https://<account>.blob.core.windows.net/<container>/<prefix>` and `wasbs://<container>@<account>.blob.core.windows.net/<prefix>`.
 
 ## Data types
 

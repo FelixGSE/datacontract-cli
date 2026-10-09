@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
@@ -19,6 +18,7 @@ from datacontract.config import Config
 from datacontract.engines.checks.check_filter import CheckFilter
 from datacontract.engines.checks.create_checks import quality_definition_yaml
 from datacontract.engines.checks.dimensions import default_dimension
+from datacontract.engines.ibis.connections.azure_credentials import SIGN_IN_HINT, resolve_azure_credentials
 from datacontract.model.exceptions import DataContractException
 from datacontract.model.run import Check, ResultEnum, Run
 
@@ -114,7 +114,7 @@ def check_azure_blob_file(
         return
 
     try:
-        blob_service_client = _build_blob_service_client(location, Config.resolve(config))
+        blob_service_client = _build_blob_service_client(location, config)
     except Exception as exc:
         _append_check(
             run,
@@ -183,10 +183,7 @@ def _check_schema(
                 "Check the account URL in the server location and your network."
             )
         elif isinstance(exc, ClientAuthenticationError):
-            reason = (
-                f"Authentication failed for Azure Blob Storage container '{container_name}'. "
-                "Check the configured credentials (DATACONTRACT_AZURE_* environment variables)."
-            )
+            reason = f"Authentication failed for Azure Blob Storage container '{container_name}'. {SIGN_IN_HINT}"
         else:
             reason = f"Failed to list blobs in container '{container_name}' with prefix '{prefix}': {exc}"
         _append_check(
@@ -446,95 +443,22 @@ def _check_file_count_quality(
 # ---------------------------------------------------------------------------
 
 
-def _build_blob_service_client(location: str, config: Config) -> "BlobServiceClient":
-    """Create a ``BlobServiceClient`` using available credentials."""
+def _build_blob_service_client(location: str, config: Config | None) -> "BlobServiceClient":
     try:
         from azure.storage.blob import BlobServiceClient
     except ImportError as exc:
         raise DataContractException(
-            type="schema",
-            result="failed",
-            name="azure-storage extra missing",
-            reason="Install the extra datacontract-cli[azure] to connect to Azure Blob Storage",
-            engine="datacontract-cli",
+            type="azure-connection",
+            name="azure extra missing",
+            reason="Install the extra datacontract-cli[azure] to connect to Azure storage",
             original_exception=exc,
         )
 
-    # 1. Connection string
-    conn_str = config.get_azure_connection_string()
-    if conn_str:
-        return BlobServiceClient.from_connection_string(conn_str)
-
-    # Derive account_url from location
-    account_url = _account_url_from_location(location)
-
-    # 2. Storage account key
-    account_key = config.get_azure_storage_account_key()
-    if account_key and account_url:
-        return BlobServiceClient(account_url=account_url, credential=account_key)
-
-    # 3. Service principal
-    tenant_id = config.get_azure_tenant_id()
-    client_id = config.get_azure_client_id()
-    client_secret = config.get_azure_client_secret()
-    if tenant_id and client_id and client_secret:
-        try:
-            from azure.identity import ClientSecretCredential
-        except ImportError as exc:
-            raise DataContractException(
-                type="schema",
-                result="failed",
-                name="azure-identity extra missing",
-                reason="Install the extra datacontract-cli[azure] to connect to Azure Blob Storage",
-                engine="datacontract-cli",
-                original_exception=exc,
-            )
-        credential = ClientSecretCredential(
-            tenant_id=tenant_id,
-            client_id=client_id,
-            client_secret=client_secret,
-        )
-        return BlobServiceClient(account_url=account_url, credential=credential)
-
-    # 4. DefaultAzureCredential (managed identity, CLI, workload identity, …)
-    try:
-        from azure.identity import DefaultAzureCredential
-    except ImportError as exc:
-        raise DataContractException(
-            type="schema",
-            result="failed",
-            name="azure-identity extra missing",
-            reason="Install the extra datacontract-cli[azure] to connect to Azure Blob Storage",
-            engine="datacontract-cli",
-            original_exception=exc,
-        )
-    return BlobServiceClient(account_url=account_url, credential=DefaultAzureCredential())
-
-
-def _account_url_from_location(location: str) -> str:
-    """Derive the BlobServiceClient account URL from a storage location string."""
-    parsed = urlparse(location)
-
-    # https://<account>.blob.core.windows.net/<container>/...
-    if parsed.scheme in ("https", "http") and ".blob.core.windows.net" in parsed.netloc:
-        return f"https://{parsed.netloc}"
-
-    # abfss://<container>@<account>.dfs.core.windows.net/<path>
-    if parsed.scheme in ("abfss", "abfs"):
-        m = re.match(r"[^@]+@(.+)", parsed.netloc)
-        if m:
-            dfs_host = m.group(1)
-            account = dfs_host.split(".")[0]
-            return f"https://{account}.blob.core.windows.net"
-
-    # wasbs://<container>@<account>.blob.core.windows.net/<path>
-    if parsed.scheme in ("wasbs", "wasb", "azure"):
-        m = re.match(r"[^@]+@(.+)", parsed.netloc)
-        if m:
-            return f"https://{m.group(1)}"
-
-    # Fallback: return the bare location as-is and let the SDK handle it
-    return location
+    credentials = resolve_azure_credentials(location, config)
+    if credentials.connection_string:
+        return BlobServiceClient.from_connection_string(credentials.connection_string)
+    account_url = "https://" + credentials.account_host.replace(".dfs.", ".blob.", 1)
+    return BlobServiceClient(account_url=account_url, credential=credentials.token_credential())
 
 
 def _parse_location(location: str) -> Tuple[Optional[str], str]:
@@ -545,27 +469,21 @@ def _parse_location(location: str) -> Tuple[Optional[str], str]:
     parsed = urlparse(location)
 
     # https://<account>.blob.core.windows.net/<container>/<prefix...>
-    if parsed.scheme in ("https", "http") and ".blob.core.windows.net" in parsed.netloc:
-        path_parts = parsed.path.lstrip("/").split("/", 1)
-        container = path_parts[0] if path_parts else None
-        prefix = path_parts[1] if len(path_parts) > 1 else ""
+    if parsed.scheme in ("https", "http") and ".blob." in parsed.netloc:
+        container, _, prefix = parsed.path.lstrip("/").partition("/")
         return container or None, prefix
 
-    # abfss://<container>@<account>.dfs.core.windows.net/<prefix>
-    if parsed.scheme in ("abfss", "abfs"):
-        m = re.match(r"([^@]+)@", parsed.netloc)
-        container = m.group(1) if m else None
-        prefix = parsed.path.lstrip("/")
-        return container or None, prefix
+    if parsed.scheme not in ("abfss", "abfs", "az", "azure", "wasbs", "wasb"):
+        return None, ""
 
-    # wasbs://<container>@<account>.blob.core.windows.net/<prefix>
-    if parsed.scheme in ("wasbs", "wasb", "azure"):
-        m = re.match(r"([^@]+)@", parsed.netloc)
-        container = m.group(1) if m else None
-        prefix = parsed.path.lstrip("/")
-        return container or None, prefix
+    container, at, _ = parsed.netloc.partition("@")
+    if at or "." not in parsed.netloc:
+        # <container>@<account>.dfs.core.windows.net/<prefix>, or a bare <container>/<prefix>
+        return container or None, parsed.path.lstrip("/")
 
-    return None, ""
+    # <account>.dfs.core.windows.net/<container>/<prefix>
+    container, _, prefix = parsed.path.lstrip("/").partition("/")
+    return container or None, prefix
 
 
 # ---------------------------------------------------------------------------

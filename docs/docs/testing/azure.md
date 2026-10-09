@@ -18,7 +18,15 @@ See [Installation](../installation.md) for pip, pipx, and Docker.
 
 ## 2. Authenticate
 
-Authentication uses an Azure Service Principal (App Registration) with a secret. Create a `.env` file in your working directory (or export the variables):
+The easiest way is to sign in to Azure once — the CLI picks the identity up, so no secret is stored anywhere:
+
+```bash
+az login   # or any other way of getting an Azure identity
+```
+
+The same works without the CLI: a managed identity on an Azure VM or container, workload identity federation on a Kubernetes pod or in CI, or the standard `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET` variables. The Docker image has no `az`, so pass it those variables (or one of the options below) instead of relying on a host login.
+
+Prefer a service principal (App Registration) with a secret? Create a `.env` file in your working directory (or export the variables) and it is used instead:
 
 ```bash
 # .env
@@ -27,13 +35,15 @@ DATACONTRACT_AZURE_CLIENT_ID=3cf7ce49-e2e9-4cbc-a922-4328d4a58622
 DATACONTRACT_AZURE_CLIENT_SECRET=yZK8Q~GWO1MMXXXXXXXXXXXXX
 ```
 
+A connection string or storage account key works too, see the [Azure Reference](../reference/azure.md#authentication).
+
 ## 3. Create a contract from your files
 
 Import the schema straight from the container. This also generates a ready-to-test `servers` block:
 
 ```bash
 datacontract import adls \
-  --source 'abfss://my-container/orders/*.json' \
+  --source 'abfss://my-container@myaccount.dfs.core.windows.net/orders/*.json' \
   --output datacontract.yaml
 ```
 
@@ -49,7 +59,7 @@ datacontract test datacontract.yaml
 
 ```
 Testing datacontract.yaml
-Server: production (type=azure, format=json, location=abfss://my-container/orders/*.json)
+Server: production (type=azure, format=json, location=abfss://my-container@myaccount.dfs.core.windows.net/orders/*.json)
 ╭────────┬─────────────────────────────────────────────────┬──────────┬─────────╮
 │ Result │ Check                                           │ Field    │ Details │
 ├────────┼─────────────────────────────────────────────────┼──────────┼─────────┤
@@ -80,12 +90,12 @@ Run `datacontract test datacontract.yaml` again: every violation is listed as an
 
 ## Reference
 
-All authentication options (service principal, connection string, account key), supported location URL formats, and the data type handling per file format: **[Azure Reference](../reference/azure.md)**.
+All authentication options (Azure credential chain, service principal, connection string, account key), supported location URL formats, and the data type handling per file format: **[Azure Reference](../reference/azure.md)**.
 
 ## Troubleshooting
 
-- **`AuthorizationPermissionMismatch` / `403`** — the service principal needs the **Storage Blob Data Reader** role on the container or storage account (IAM role assignment, not just API permissions).
-- **`No files found that match the pattern`** — check the `location` URL format (see below) and the glob; it matches blob names under the prefix.
+- **`AuthorizationPermissionMismatch` / `403`** — the identity (your `az login` user, the managed identity, or the service principal) needs the **Storage Blob Data Reader** role on the container or storage account (IAM role assignment, not just API permissions). Being Owner of the subscription is not enough for the data plane.
+- **`No files found that match the pattern`** — check the `location` URL format (see the [Azure Reference](../reference/azure.md#authentication)) and the glob; it matches blob names under the prefix.
 
 ## Metadata checks
 
@@ -125,11 +135,4 @@ Schema-level quality checks (`schema.quality`) on the `rowCount` metric are eval
 `contentType` is normalised before comparison: MIME parameters are stripped, so
 `application/json; charset=utf-8` matches `application/json`.
 
-Supported `location` URL formats (on the server block):
-
-- `https://<account>.blob.core.windows.net/<container>/<prefix>`
-- `abfss://<container>@<account>.dfs.core.windows.net/<prefix>`
-- `azure://<container>@<account>.blob.core.windows.net/<prefix>`
-- `wasbs://<container>@<account>.blob.core.windows.net/<prefix>`
-
-The metadata-check path also accepts `DATACONTRACT_AZURE_CONNECTION_STRING` or `DATACONTRACT_AZURE_STORAGE_ACCOUNT_KEY` instead of the service principal variables.
+The supported `location` URL formats are listed in the [Azure Reference](../reference/azure.md#authentication).

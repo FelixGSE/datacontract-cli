@@ -48,7 +48,7 @@ DEFAULT_ENDPOINT_URLS = {"gcs": GCS_ENDPOINT_URL}
 
 _EXAMPLE_LOCATIONS = {
     "s3": "s3://my-bucket/orders/*.json",
-    "azure": "abfss://my-container/orders/*.json",
+    "azure": "abfss://my-container@myaccount.dfs.core.windows.net/orders/*.json",
 }
 
 _READERS = {

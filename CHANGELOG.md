@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `datacontract lint --all-errors`: unknown fields are warnings instead of errors, unless a custom `--schema` rejects them
 
 ### Added
+- `datacontract test` and `datacontract import adls`: Azure storage authenticates with the Azure credential chain (`az login`, workload identity, managed identity), a connection string or an account key (#1716)
 - `datacontract edit`: enable the editor's AI assistant via `DATACONTRACT_EDITOR_AI_*` environment variables (endpoint, API key, model, provider, auth header)
 
 ### Fixed

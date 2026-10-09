@@ -1,11 +1,11 @@
 import logging
-import re
 from typing import TYPE_CHECKING, Any, List, Optional
 
 from open_data_contract_standard.model import OpenDataContractStandard, SchemaObject, SchemaProperty, Server
 
 from datacontract.config import Config
 from datacontract.engines.ibis.connections.aws_credentials import resolve_aws_credentials
+from datacontract.engines.ibis.connections.azure_credentials import resolve_azure_credentials
 from datacontract.export.duckdb_type_converter import convert_to_duckdb_csv_type, convert_to_duckdb_json_type
 from datacontract.export.sql_type_converter import convert_to_duckdb
 from datacontract.model.run import Run
@@ -531,6 +531,12 @@ def _sql_literal(value) -> str:
     return str(value).replace("'", "''") if value is not None else ""
 
 
+def _create_secret(con, name: str, secret_type: str, options: dict[str, str | None]) -> None:
+    """``CREATE OR REPLACE SECRET`` with every set option as an escaped string literal."""
+    clauses = ", ".join(f"{key} '{_sql_literal(value)}'" for key, value in options.items() if value)
+    con.sql(f"CREATE OR REPLACE SECRET {name} (TYPE {secret_type}, {clauses});")
+
+
 def setup_s3_connection(con, server: Server, config: Config | None = None):
     """boto3 resolves the credentials because duckdb's ``PROVIDER credential_chain`` cannot read an SSO cache."""
     _load_extension(con, "httpfs", "s3")
@@ -555,75 +561,34 @@ def setup_s3_connection(con, server: Server, config: Config | None = None):
             "REGION": credentials.region,
             "SESSION_TOKEN": credentials.session_token,
         }
-    clauses = ", ".join(f"{name} '{_sql_literal(value)}'" for name, value in options.items() if value)
-    con.sql(f"CREATE OR REPLACE SECRET s3_secret (TYPE S3, {clauses});")
+    _create_secret(con, "s3_secret", "S3", options)
 
 
 def setup_gcs_connection(con, server: Server, config: Config):
     _load_extension(con, "httpfs", "gcs")
     key_id = config.get_gcs_key_id(required=True)
     secret = config.get_gcs_secret(required=True)
-
-    con.sql(f"""
-    CREATE SECRET gcs_secret (
-        TYPE GCS,
-        KEY_ID '{_sql_literal(key_id)}',
-        SECRET '{_sql_literal(secret)}'
-    );
-    """)
+    _create_secret(con, "gcs_secret", "GCS", {"KEY_ID": key_id, "SECRET": secret})
 
 
 def setup_azure_connection(con, server: Server, config: Config):
-    tenant_id = config.get_azure_tenant_id(required=True)
-    client_id = config.get_azure_client_id(required=True)
-    client_secret = config.get_azure_client_secret(required=True)
-    storage_account = (
-        to_azure_storage_account(server.location) if server.type == "azure" and "://" in server.location else None
-    )
-
-    _load_extension(con, "azure", "azure")
-
-    if storage_account is not None:
-        con.sql(f"""
-        CREATE SECRET azure_spn (
-            TYPE AZURE,
-            PROVIDER SERVICE_PRINCIPAL,
-            TENANT_ID '{_sql_literal(tenant_id)}',
-            CLIENT_ID '{_sql_literal(client_id)}',
-            CLIENT_SECRET '{_sql_literal(client_secret)}',
-            ACCOUNT_NAME '{_sql_literal(storage_account)}'
-        );
-        """)
+    """azure.identity resolves the credential: duckdb's own credential chain does not cover workload identity."""
+    credentials = resolve_azure_credentials(server.location, config)
+    if credentials.connection_string:
+        options = {"CONNECTION_STRING": credentials.connection_string}
+    elif credentials.service_principal:
+        options = {
+            "PROVIDER": "SERVICE_PRINCIPAL",
+            "TENANT_ID": credentials.tenant_id,
+            "CLIENT_ID": credentials.client_id,
+            "CLIENT_SECRET": credentials.client_secret,
+            "ACCOUNT_NAME": credentials.account_host.partition(".")[0],
+        }
     else:
-        con.sql(f"""
-        CREATE SECRET azure_spn (
-            TYPE AZURE,
-            PROVIDER SERVICE_PRINCIPAL,
-            TENANT_ID '{_sql_literal(tenant_id)}',
-            CLIENT_ID '{_sql_literal(client_id)}',
-            CLIENT_SECRET '{_sql_literal(client_secret)}'
-        );
-        """)
-
-
-def to_azure_storage_account(location: str) -> str | None:
-    """
-    Converts a storage location string to extract the storage account name.
-    ODCS v3.0 has no explicit field for the storage account. It uses the location field, which is a URI.
-    This function parses a storage location string to identify and return the
-    storage account name. It handles two primary patterns:
-    1. Protocol://containerName@storageAccountName
-    2. Protocol://storageAccountName
-    :param location: The storage location string to parse, typically following
-                     the format protocol://containerName@storageAccountName. or
-                     protocol://storageAccountName.
-    :return: The extracted storage account name if found, otherwise None
-    """
-    # to catch protocol://containerName@storageAccountName. pattern from location
-    match = re.search(r"(?<=@)([^.]*)", location, re.IGNORECASE)
-    if match:
-        return match.group()
-    else:
-        # to catch protocol://storageAccountName. pattern from location
-        match = re.search(r"(?<=//)(?!@)([^.]*)", location, re.IGNORECASE)
-    return match.group() if match else None
+        options = {
+            "PROVIDER": "ACCESS_TOKEN",
+            "ACCESS_TOKEN": credentials.storage_access_token(),
+            "ACCOUNT_NAME": credentials.account_host.partition(".")[0],
+        }
+    _load_extension(con, "azure", "azure")  # after the credentials, so a misconfiguration fails before the load
+    _create_secret(con, "azure_secret", "AZURE", options)

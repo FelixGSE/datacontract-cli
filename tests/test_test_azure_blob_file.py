@@ -15,7 +15,6 @@ from typing import List, Optional
 from unittest.mock import MagicMock, patch
 
 from datacontract.engines.datacontract.check_azure_blob_file import (
-    _account_url_from_location,
     _parse_location,
     check_azure_blob_file,
 )
@@ -109,20 +108,6 @@ class TestParseLocation:
         container, prefix = _parse_location("abfs://mycontainer@myaccount.dfs.core.windows.net/path/to/data")
         assert container == "mycontainer"
         assert prefix == "path/to/data"
-
-
-class TestAccountUrlFromLocation:
-    def test_https_blob(self):
-        url = _account_url_from_location("https://myaccount.blob.core.windows.net/mycontainer/raw/")
-        assert url == "https://myaccount.blob.core.windows.net"
-
-    def test_abfss(self):
-        url = _account_url_from_location("abfss://mycontainer@myaccount.dfs.core.windows.net/path/")
-        assert url == "https://myaccount.blob.core.windows.net"
-
-    def test_wasbs(self):
-        url = _account_url_from_location("wasbs://mycontainer@myaccount.blob.core.windows.net/raw/")
-        assert url == "https://myaccount.blob.core.windows.net"
 
 
 # ---------------------------------------------------------------------------

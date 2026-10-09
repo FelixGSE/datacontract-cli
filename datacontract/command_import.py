@@ -694,11 +694,14 @@ def import_gcs(
 
 @import_app.command(
     name="adls",
-    epilog="Example: datacontract import adls --source abfss://my-container/orders/*.json --output datacontract.yaml",
+    epilog="Example: datacontract import adls --source abfss://my-container@myaccount.dfs.core.windows.net/orders/*.json --output datacontract.yaml",
 )
 def import_adls(
     source: Annotated[
-        Optional[str], typer.Option(help="The location of the files, e.g. abfss://my-container/orders/*.json.")
+        Optional[str],
+        typer.Option(
+            help="The location of the files, e.g. abfss://my-container@myaccount.dfs.core.windows.net/orders/*.json."
+        ),
     ] = None,
     format: Annotated[
         Optional[str], typer.Option(help="File format: json, csv, parquet or delta (inferred from the suffix).")
